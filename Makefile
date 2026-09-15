@@ -139,6 +139,35 @@ $(BUILD)/panel$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+# GDI の肩代わり（macOS）。パネル・エディタ・エフェクトの絵は GDI で描いてあり、
+# その .cpp には手を触れずに、GDI の側を CoreGraphics と CoreText で用意する
+ifdef MACOS
+GDI_SRC  := src/compat/gdicompat_mac.mm
+GDI_OBJ  := $(BUILD)/src/compat/gdicompat_mac.o
+FW_DRAW  := -framework CoreGraphics -framework CoreText -framework ImageIO \
+            -framework CoreFoundation -framework CoreServices
+
+$(BUILD)/src/compat/%.o: src/compat/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -ObjC++ -c -o $@ $<
+
+$(BUILD)/src/ui/%.o: src/ui/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -ObjC++ -c -o $@ $<
+
+# 肩代わりした GDI でパネルの絵が出るかを見る。画面も音源も要らない
+$(BUILD)/paneltest$(EXE): $(GDI_OBJ) $(BUILD)/src/ui/paneltest.o \
+                          $(BUILD)/src/ui/panel.o $(BUILD)/src/ui/layout.o \
+                          $(BUILD)/src/ui/svg.o $(BUILD)/src/ui/editor.o \
+                          $(BUILD)/src/ui/effects.o $(BUILD)/src/ui/png.o \
+                          $(BUILD)/src/xg/model.o $(BUILD)/src/compat/compat.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(FW_DRAW)
+
+paneltest: $(BUILD)/paneltest$(EXE)
+
+endif
+
 # 音声と MIDI の出入口。口（audio_out.h / midi_in.h）は同じで、中身が機種で違う
 ifdef MACOS
 AUDIO_OUT_SRC := src/ui/audio_out_mac.cpp
@@ -423,4 +452,4 @@ clean:
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
 .PHONY: all clean regen gui vst3 install-vst3 probe test test-update \
-        auv3 install-auv3 auval autest
+        auv3 install-auv3 auval autest paneltest

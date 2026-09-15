@@ -14,7 +14,7 @@
 
 #include <string>
 
-#include <windows.h>
+#include "compat/gdicompat.h"
 
 namespace ui {
 
