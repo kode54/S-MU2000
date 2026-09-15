@@ -21,8 +21,6 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
-
 namespace {
 
 void write_wav(const std::string &path, const std::vector<s16> &pcm, u32 rate)

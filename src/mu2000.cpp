@@ -10,8 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <immintrin.h>
-#include <windows.h>
+#include "compat/platform.h"
 
 
 namespace {
@@ -138,7 +137,7 @@ void mu2000::slave_loop(u64 seen)
 			if (m_slave_quit.load(std::memory_order_relaxed))
 				return;
 			if (SLAVE_SPINS <= 0 || ++spins < SLAVE_SPINS)
-				_mm_pause();
+				smu2000::cpu_relax();
 			else
 				m_slave_go.wait(seen, std::memory_order_acquire);
 		}
@@ -822,15 +821,15 @@ void mu2000::run_sample(s32 &left, s32 &right)
 	m_cycle_debt -= cycles * 44100;
 
 	// 内訳を測る（set_profile(true) のときだけ）
-	LARGE_INTEGER pt0, pt1, pt2;
+	u64 pt0 = 0, pt1 = 0, pt2 = 0;
 	if (m_profile)
-		QueryPerformanceCounter(&pt0);
+		pt0 = smu2000::now_ns();
 
 	run_cycles(cycles);
 
 	if (m_profile) {
-		QueryPerformanceCounter(&pt1);
-		m_t_cpu += u64(pt1.QuadPart - pt0.QuadPart);
+		pt1 = smu2000::now_ns();
+		m_t_cpu += pt1 - pt0;
 	}
 
 	// マスタとスレーブを 1 サンプルずつ進める。
@@ -842,7 +841,7 @@ void mu2000::run_sample(s32 &left, s32 &right)
 		m_slave_go.notify_one();   // 眠っていたら起こす。起きていれば素通り
 		m_swpm.run_sample(lm, rm);
 		while (m_slave_done.load(std::memory_order_acquire) != tag)
-			_mm_pause();
+			smu2000::cpu_relax();
 		ls = m_slave_l;
 		rs = m_slave_r;
 	} else {
@@ -851,8 +850,8 @@ void mu2000::run_sample(s32 &left, s32 &right)
 	}
 
 	if (m_profile) {
-		QueryPerformanceCounter(&pt2);
-		m_t_swpm += u64(pt2.QuadPart - pt1.QuadPart);
+		pt2 = smu2000::now_ns();
+		m_t_swpm += pt2 - pt1;
 		m_t_n++;
 	}
 

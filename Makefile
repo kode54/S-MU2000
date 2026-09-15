@@ -6,11 +6,31 @@
 #   make test     回帰試験（ROM が無ければ verify だけ）
 #   make clean    消す
 #
-# MSYS2 / MinGW-w64 の g++ を想定している。
+# Windows は MSYS2 / MinGW-w64 の g++、macOS は Xcode の clang++ を想定している。
 # C++20 が要る（sh.cpp が std::rotl / std::rotr を使う）。
+#
+# 作れるものは機種で変わる（下の all を見よ）。音を作るところは同じで、
+# 違うのは音声と MIDI の出入口と画面だけ:
+#
+#   Windows   WASAPI / WinMM / Direct3D 11 / VST3
+#   macOS     CoreAudio / CoreMIDI（gui と vst3 はまだ）
+#
+# **JIT は Windows の x86-64 だけ。** ほかでは解釈実行に落ちる（音は同じ）。
+# Apple Silicon では x86-64 の機械語を吐けないので、そのぶん遅い
 
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Darwin)
+MACOS := 1
+CXX      ?= clang++
+PYTHON   ?= python3
+# 実行ファイルに .exe は付けない
+EXE      :=
+else
 CXX      ?= g++
 PYTHON   ?= python
+EXE      := .exe
+endif
 # 音を作るのは重いので最適化を上げる。-O2 より 6% 速い
 CXXFLAGS ?= -std=c++20 -O3 -Wall -Wno-unused-variable -Wno-unused-but-set-variable
 
@@ -23,9 +43,18 @@ CXXFLAGS += -I src -I src/compat
 # ヘッダを直したときに .o を作り直させる
 CXXFLAGS += -MMD -MP
 
+ifdef MACOS
+# macOS は静的リンクしない（Apple は libSystem の静的リンクを認めていない）。
+# 音声と MIDI は OS の枠組みを使う
+LDFLAGS   ?=
+FW_AUDIO  := -framework CoreAudio -framework AudioToolbox -framework AudioUnit \
+             -framework CoreFoundation
+FW_MIDI   := -framework CoreMIDI
+else
 # MSYS2 の DLL に依存させない。動的リンクのままだと、MSYS2 の環境の外
 # （素の PowerShell など）では起動に失敗して何も言わずに終わる
 LDFLAGS ?= -static -static-libgcc -static-libstdc++
+endif
 
 BUILD := build
 
@@ -50,60 +79,80 @@ SRCS := \
 
 OBJS := $(SRCS:%.cpp=$(BUILD)/%.o)
 
+ifdef MACOS
+# macOS で作れるもの。gui（Direct3D 11）と vst3、midisend / rec（WinMM）は
+# まだ Windows だけ。doc/macos.md を見よ
+all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
+     $(BUILD)/live$(EXE) $(BUILD)/panel$(EXE) \
+     $(BUILD)/statetest$(EXE) $(BUILD)/blocktime$(EXE) \
+     $(BUILD)/xgtest$(EXE) $(BUILD)/samptest$(EXE)
+else
 # vst3 と vst3probe は下で定義している。変数はまだ空なので名前で書く
-all: $(BUILD)/verify.exe $(BUILD)/boot.exe $(BUILD)/render.exe \
-     $(BUILD)/live.exe $(BUILD)/midisend.exe $(BUILD)/panel.exe $(BUILD)/gui.exe \
-     $(BUILD)/statetest.exe $(BUILD)/rec.exe $(BUILD)/blocktime.exe \
-     vst3 $(BUILD)/vst3probe.exe
+all: $(BUILD)/verify$(EXE) $(BUILD)/boot$(EXE) $(BUILD)/render$(EXE) \
+     $(BUILD)/live$(EXE) $(BUILD)/midisend$(EXE) $(BUILD)/panel$(EXE) $(BUILD)/gui$(EXE) \
+     $(BUILD)/statetest$(EXE) $(BUILD)/rec$(EXE) $(BUILD)/blocktime$(EXE) \
+     vst3 $(BUILD)/vst3probe$(EXE)
+endif
 
-$(BUILD)/verify.exe: $(OBJS) $(BUILD)/src/verify.o
+$(BUILD)/verify$(EXE): $(OBJS) $(BUILD)/src/verify.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(BUILD)/boot.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/boot.o
+$(BUILD)/boot$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/boot.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # 1 ブロックを作るのに何 ms かかるかを測る。音声デバイスは使わない。
 # 待ち時間の下限はこの最悪値で決まる（doc/todo.md 2 番）
-$(BUILD)/blocktime.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/blocktime.o
+$(BUILD)/blocktime$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/blocktime.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # パラメータの層の定義表を firmware に確かめさせる（doc/params.md）
-$(BUILD)/xgtest.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/xg/model.o $(BUILD)/src/xgtest.o
+$(BUILD)/xgtest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/xg/model.o $(BUILD)/src/xgtest.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # インサーションのパラメータの表（src/xg/fx_params.h）を firmware の LCD から作る（doc/pc-editor.md）。
 #   build/fxsweep.exe ../MU2000/roms > fxsweep.txt
 #   python tools/fxsweep/make_fx_params.py fxsweep.txt src/xg/fx_params.h
-$(BUILD)/fxsweep.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/tools/fxsweep/fxsweep.o
+$(BUILD)/fxsweep$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/tools/fxsweep/fxsweep.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-$(BUILD)/render.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/render.o
+$(BUILD)/render$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/render.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # samptest はサンプリング（録音して試聴する）が一回りするかを確かめる
-$(BUILD)/samptest.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/samptest.o
+$(BUILD)/samptest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/samptest.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # statetest は状態の保存と復元が正しいかを確かめる
-$(BUILD)/statetest.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/statetest.o
+$(BUILD)/statetest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/statetest.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # panel はフロントパネル（LCD とボタン）を文字だけで動かす
-$(BUILD)/panel.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/panel.o
+$(BUILD)/panel$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(BUILD)/src/panel.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
+# 音声と MIDI の出入口。口（audio_out.h / midi_in.h）は同じで、中身が機種で違う
+ifdef MACOS
+AUDIO_OUT_SRC := src/ui/audio_out_mac.cpp
+MIDI_IN_SRCS  := src/ui/midi_in_common.cpp src/ui/midi_in_mac.cpp
+else
+AUDIO_OUT_SRC := src/ui/audio_out.cpp
+MIDI_IN_SRCS  := src/ui/midi_in_common.cpp src/ui/midi_in.cpp
+endif
+AUDIO_OUT_OBJ := $(AUDIO_OUT_SRC:%.cpp=$(BUILD)/%.o)
+MIDI_IN_OBJS  := $(MIDI_IN_SRCS:%.cpp=$(BUILD)/%.o)
+
 # gui は実機のフロントパネル風の画面を出す
 UI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp src/ui/png.cpp \
-           src/ui/audio_out.cpp src/ui/audio_in.cpp src/ui/midi_in.cpp src/ui/midi_out.cpp \
+           $(AUDIO_OUT_SRC) src/ui/audio_in.cpp $(MIDI_IN_SRCS) src/ui/midi_out.cpp \
            src/ui/layout.cpp src/ui/svg.cpp src/ui/player.cpp src/xg/model.cpp
 UI_OBJS := $(UI_SRCS:%.cpp=$(BUILD)/%.o)
 
@@ -121,25 +170,33 @@ $(BUILD)/imgui/%.o: %.cpp
 
 $(BUILD)/src/gui.o: CXXFLAGS += $(IMGUI_FLAGS)
 
-$(BUILD)/gui.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o
+ifndef MACOS
+$(BUILD)/gui$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(UI_OBJS) $(PC_OBJS) $(BUILD)/src/gui.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lgdi32 -luser32 -lavrt -lcomdlg32 -lshell32 	       -ld3d11 -ldxgi -ld3dcompiler -ldwmapi -limm32
 
 # midisend は MIDI ファイルを実時間で MIDI 出力へ流す（live の試験用）
-$(BUILD)/midisend.exe: $(BUILD)/src/smf.o $(BUILD)/src/midisend.o $(BUILD)/src/compat/compat.o
+$(BUILD)/midisend$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/midisend.o $(BUILD)/src/compat/compat.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lavrt
 
 # rec は音声入力を WAV に録る。実機の音（S/PDIF 入力）と突き合わせるため。
 # 録りながら MIDI を実機へ流せるので、同じ譜面の実機とこちらを 1 回で並べられる
-$(BUILD)/rec.exe: $(BUILD)/src/smf.o $(BUILD)/src/rec.o $(BUILD)/src/compat/compat.o
+$(BUILD)/rec$(EXE): $(BUILD)/src/smf.o $(BUILD)/src/rec.o $(BUILD)/src/compat/compat.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -luuid
+endif
 
-# live は Windows の MIDI 入力と音声出力を使う
-$(BUILD)/live.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/ui/midi_in.o $(BUILD)/src/ui/audio_out.o $(BUILD)/src/live.o
+# live は MIDI 入力を受けてその場で鳴らす。
+#   Windows  WinMM の MIDI 入力 + WASAPI
+#   macOS    CoreMIDI + CoreAudio
+$(BUILD)/live$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(MIDI_IN_OBJS) $(AUDIO_OUT_OBJ) $(BUILD)/src/live.o
 	@mkdir -p $(dir $@)
+ifdef MACOS
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(FW_AUDIO) $(FW_MIDI)
+else
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lavrt
+endif
 
 # ---- VST3 プラグイン
 #
@@ -149,6 +206,7 @@ $(BUILD)/live.exe: $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/ui/midi_in.o $(BUI
 #   make vst3      build/S-MU2000.vst3/ にバンドルを作る
 #   make install-vst3   それを VST3 の置き場へ複製する
 
+ifndef MACOS
 VST3_DIR  := $(BUILD)/S-MU2000.vst3
 VST3_BIN  := $(VST3_DIR)/Contents/x86_64-win/S-MU2000.vst3
 VST3_INC  := -I third_party/vst3
@@ -184,12 +242,13 @@ install-vst3: $(VST3_BIN)
 	@echo "入れた: $(VST3_INSTALL)/S-MU2000.vst3"
 
 # 工場が名乗るかどうかだけを確かめる小さな道具
-$(BUILD)/vst3probe.exe: $(BUILD)/vst3obj/src/vst3/probe.o $(BUILD)/vst3obj/src/vst3/iids.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/funknown.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/coreiids.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/conststringtable.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/ustring.o                         $(BUILD)/src/smf.o $(BUILD)/src/compat/compat.o
+$(BUILD)/vst3probe$(EXE): $(BUILD)/vst3obj/src/vst3/probe.o $(BUILD)/vst3obj/src/vst3/iids.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/funknown.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/coreiids.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/conststringtable.o                         $(BUILD)/vst3obj/third_party/vst3/pluginterfaces/base/ustring.o                         $(BUILD)/src/smf.o $(BUILD)/src/compat/compat.o
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lole32
 
-probe: $(BUILD)/vst3probe.exe $(VST3_BIN)
-	$(BUILD)/vst3probe.exe $(VST3_BIN)
+probe: $(BUILD)/vst3probe$(EXE) $(VST3_BIN)
+	$(BUILD)/vst3probe$(EXE) $(VST3_BIN)
+endif
 
 $(BUILD)/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -202,6 +261,14 @@ MAME_SH7042 ?= ../MU2000/mame-src/src/devices/cpu/sh/sh7042.cpp
 regen:
 	python tools/gen_sh7042_map.py $(MAME_SH7042)
 
+ifdef MACOS
+# まだ移していないもの。黙って「ルールが無い」と言われるより、理由を出す
+gui vst3 install-vst3 probe:
+	@echo "$@ はまだ Windows だけ（画面が Direct3D 11、音声と MIDI が WinMM）。"
+	@echo "doc/macos.md を見よ。macOS では live / render / panel が使える"
+	@false
+endif
+
 # 回帰試験。直したことで音が変わっていないかを見る。
 #
 # ROM は同梱できないので、ROM が無い機械では verify だけが走る（それが正しい）。
@@ -209,7 +276,8 @@ regen:
 #   make test                     全部
 #   make test T=piano             1 件だけ
 #   make test-update              指紋を焼き直す（意図して音を変えたとき）
-TEST_EXES := $(BUILD)/verify.exe $(BUILD)/statetest.exe $(BUILD)/render.exe $(BUILD)/xgtest.exe $(BUILD)/samptest.exe
+TEST_EXES := $(BUILD)/verify$(EXE) $(BUILD)/statetest$(EXE) $(BUILD)/render$(EXE) \
+             $(BUILD)/xgtest$(EXE) $(BUILD)/samptest$(EXE)
 
 test: $(TEST_EXES)
 	$(PYTHON) tools/run_tests.py $(if $(T),--only $(T),)
@@ -228,4 +296,4 @@ clean:
 # 別の場所を触りに行っていた）。だから build の下にある .d を全部拾う
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
-.PHONY: all clean regen vst3 install-vst3 probe test test-update
+.PHONY: all clean regen gui vst3 install-vst3 probe test test-update

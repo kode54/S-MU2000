@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-#include <windows.h>
+#include "compat/platform.h"
 
 namespace {
 
@@ -104,7 +104,7 @@ void report_where(const std::vector<u8> &blob, size_t at)
 
 int main(int argc, char **argv)
 {
-	SetConsoleOutputCP(CP_UTF8);
+	smu2000::console_utf8();
 	// 落ちても途中まで見えるように。調べ物の道具なので速さは要らない
 	std::setvbuf(stdout, nullptr, _IONBF, 0);
 

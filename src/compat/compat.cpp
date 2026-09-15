@@ -3,10 +3,28 @@
 // 互換層の実体。ログと、移植の突き合わせ用の命令追跡。
 
 #include "mamecompat.h"
+#include "platform.h"
 
 #include <cstdio>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace smu2000 {
+
+// 端末に UTF-8 を出せるようにする。Windows の既定は CP932 で、
+// このソースの表示は UTF-8 なので化ける。macOS は元から UTF-8
+void console_utf8()
+{
+#ifdef _WIN32
+	SetConsoleOutputCP(CP_UTF8);
+#endif
+}
 
 bool g_verbose = false;
 

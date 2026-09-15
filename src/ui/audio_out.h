@@ -110,6 +110,14 @@ public:
 private:
 	void run(int latency_ms, bool exclusive);
 
+#ifdef __APPLE__
+	// CoreAudio（audio_out_mac.cpp）。デバイスの実時間スレッドから呼ばれ、
+	// frames ぶんを iodata（AudioBufferList）へ書く。戻り値は OSStatus。
+	// CoreAudio の型をここへ持ち込まないために void * と int にしてある
+	int   render(u32 frames, void *iodata);
+	void *m_mac = nullptr;          // mac_stream。開いていなければ nullptr
+#endif
+
 	fill_fn           m_fill;
 	std::thread       m_thread;
 	std::atomic<bool> m_quit{false};

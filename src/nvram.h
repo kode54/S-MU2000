@@ -28,7 +28,13 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cstdlib>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace smu2000 {
 namespace nvram {
@@ -45,9 +51,12 @@ inline u64 rom_key(const mu2000 &mu)
 	return h;
 }
 
-// 置き場。作れなければ空
+// 置き場。作れなければ空。
+//   Windows  %LOCALAPPDATA%\S-MU2000\nvram\
+//   macOS    ~/Library/Application Support/S-MU2000/nvram/
 inline std::string path(const mu2000 &mu)
 {
+#ifdef _WIN32
 	char base[MAX_PATH * 2];
 	const DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", base, sizeof(base));
 	if (!n || n >= sizeof(base))
@@ -59,6 +68,20 @@ inline std::string path(const mu2000 &mu)
 	char name[32];
 	std::snprintf(name, sizeof(name), "\\%016llx.bin", (unsigned long long)rom_key(mu));
 	return dir + name;
+#else
+	const char *home = std::getenv("HOME");
+	if (!home || !*home)
+		return {};
+	std::string dir = std::string(home) + "/Library/Application Support";
+	::mkdir(dir.c_str(), 0755);
+	dir += "/S-MU2000";
+	::mkdir(dir.c_str(), 0755);
+	dir += "/nvram";
+	::mkdir(dir.c_str(), 0755);
+	char name[32];
+	std::snprintf(name, sizeof(name), "/%016llx.bin", (unsigned long long)rom_key(mu));
+	return dir + name;
+#endif
 }
 
 // reset() の前に呼ぶ。無い・大きさが違うときは何もせず false（工場出荷状態で起動する）
@@ -90,10 +113,19 @@ inline bool save(const mu2000 &mu)
 	const std::vector<u8> &ram = mu.nvram();
 	const bool ok = std::fwrite(ram.data(), 1, ram.size(), f) == ram.size();
 	if (std::fclose(f) != 0 || !ok) {
+#ifdef _WIN32
 		DeleteFileA(tmp.c_str());
+#else
+		::unlink(tmp.c_str());
+#endif
 		return false;
 	}
+#ifdef _WIN32
 	return MoveFileExA(tmp.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+	// rename(2) は同じファイルシステムの中で不可分に置き換える
+	return ::rename(tmp.c_str(), p.c_str()) == 0;
+#endif
 }
 
 } // namespace nvram

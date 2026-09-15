@@ -78,6 +78,9 @@ MIDI 経由の予備の経路もあり、両方で吸ったものが 1 バイト
 
 ## 使い方
 
+Windows では `.exe` が付く。macOS では付かない（以下は `.exe` で書く。
+macOS は [doc/macos.md](doc/macos.md) を見よ）。
+
 ```
 make
 
@@ -102,7 +105,8 @@ build/blocktime.exe <rom> <MIDI> <フレーム数> [秒] [回数]  1 ブロッ�
 つまみの位置もここ（実機でもアナログのつまみで、firmware の RAM には入らない）。
 
 **MU2000 の設定は電源を入れ直しても残る。** 実機の電池で保持される RAM と同じ
-ものを、`gui` と `live` が終わるときに `%LOCALAPPDATA%\S-MU2000\nvram\` へ残し、
+ものを、`gui` と `live` が終わるときに `%LOCALAPPDATA%\S-MU2000\nvram\`
+（macOS は `~/Library/Application Support/S-MU2000/nvram/`）へ残し、
 次の起動で使う。ユーティリティの設定も、XG のマスタボリュームのような
 値も残る（実機の firmware がそう作ってある）。VST3 はここを**読むだけ**で、
 挿したときは gui / live で作った設定から始まる（VST3 の中で変えたものは DAW の
@@ -217,11 +221,22 @@ rom ディレクトリには次を置く。
 
 ## ビルドについて
 
-MSYS2 / MinGW-w64 の g++ を想定している。C++20 が要る。
+Windows と macOS で作れる。`make` だけでよい（`Makefile` が `uname -s` で
+決める）。C++20 が要る。
 `make test` で回帰試験が回る（[doc/testing.md](doc/testing.md)）。ROM が無い
 機械でも、ROM の要らない分だけは走る。
-出来た exe は **MSYS2 の DLL に依存しない**ように静的リンクしてある
-（動的リンクのままだと、素の PowerShell から起動しても何も言わずに終わる）。
+
+**Windows** … MSYS2 / MinGW-w64 の g++。出来た exe は **MSYS2 の DLL に
+依存しない**ように静的リンクしてある（動的リンクのままだと、素の PowerShell
+から起動しても何も言わずに終わる）。
+
+**macOS** … Xcode の clang++ だけで作れる（[doc/macos.md](doc/macos.md)）。
+音声は CoreAudio、MIDI は CoreMIDI。`live` / `render` / `panel` と回帰試験は
+そのまま動き、**音は Windows と同じもの**が出る（`tests/*.json` の指紋が
+そのまま合う）。`gui` と VST3 は画面が Direct3D 11 なのでまだ Windows だけ。
+
+**JIT は Windows の x86-64 だけ。** ほかの機械では解釈実行に落ちる。出る音は
+同じで、そのぶん遅い（Apple Silicon で実時間の 35-50%、1 コア）。
 
 ## 由来とライセンス
 

@@ -316,13 +316,18 @@ public:
 	// サブデバイスの生成。こちらは実体を直に作るので中身は使わない
 	virtual void device_add_mconfig(machine_config &) {}
 
-	// MAME の timer_alloc(FUNC(cb), this)。呼び出し側の running_machine に預ける
+	// MAME の timer_alloc(FUNC(cb), this)。呼び出し側の running_machine に預ける。
+	//
+	// 本体は running_machine が出来上がったあと（下の方）で書く。ここで
+	// machine().make_timer() と書くと、clang は雛形でない呼び出しをその場で
+	// 解決しようとして「running_machine が未完成」と言って止まる（g++ は後回しにする）
 	template <typename T, typename U>
 	emu_timer *timer_alloc(void (T::*cb)(s32), const char *, U *obj)
 	{
 		T *self = static_cast<T *>(obj);
-		return machine().make_timer([self, cb](s32 p) { (self->*cb)(p); });
+		return alloc_timer([self, cb](s32 p) { (self->*cb)(p); });
 	}
+	emu_timer *alloc_timer(std::function<void(s32)> cb);
 
 private:
 	u32 m_clock = 0;
@@ -693,6 +698,11 @@ private:
 	u64 m_cycles = 0;
 	std::vector<std::unique_ptr<emu_timer>> m_timers;
 };
+
+inline emu_timer *device_t::alloc_timer(std::function<void(s32)> cb)
+{
+	return machine().make_timer(std::move(cb));
+}
 
 inline void emu_timer::adjust(const attotime &when, s32 param)
 {

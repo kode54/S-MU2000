@@ -6,12 +6,12 @@
 
 見るもの:
 
-  1. verify.exe      SWP30 のレジスタ素通しと乱数の数列（ROM 不要）
-  2. statetest.exe   状態の保存と復元。写し忘れがあれば落ちる
+  1. verify         SWP30 のレジスタ素通しと乱数の数列（ROM 不要）
+  2. statetest      状態の保存と復元。写し忘れがあれば落ちる
   3. 鳴らし比べ       tests/*.json の指紋と突き合わせる
   4. スレーブ別糸      threaded と --single で出る音が同じこと
-  5. xgtest.exe      パラメータの層の定義表を firmware に読み返させる（doc/params.md）
-  6. samptest.exe    パネルで録音して試聴し、録った音が返ってくるか
+  5. xgtest         パラメータの層の定義表を firmware に読み返させる（doc/params.md）
+  6. samptest       パネルで録音して試聴し、録った音が返ってくるか
 
 **ROM が無い機械では 1 番だけ走る**（ROM は同梱できないので、それが正しい）。
 ROM の置き場は --roms、環境変数 SMU2000_ROMS、roms/、../MU2000/roms の順に探す。
@@ -38,6 +38,18 @@ BASE = ROOT / "tests"
 RATE = 44100
 
 NEEDED = ("mu2000_flash.bin", "dump/xv364a0.ic49")
+
+# 実行ファイルの名前。Windows は .exe、macOS は素の名前（Makefile の $(EXE)）
+EXE = ".exe" if sys.platform == "win32" else ""
+
+
+def find_exe(name):
+    """build/ の実行ファイル。念のため両方の名前を見る"""
+    for suffix in (EXE, ".exe", ""):
+        p = BUILD / (name + suffix)
+        if p.exists():
+            return p
+    return BUILD / (name + EXE)
 
 
 def find_roms(given):
@@ -93,9 +105,9 @@ class Report:
 
 def step_verify(rep, update):
     """ROM 不要。swp30 を素で叩いて、レジスタと乱数が動いているか"""
-    exe = BUILD / "verify.exe"
+    exe = find_exe("verify")
     if not exe.exists():
-        rep.add("verify", False, "build/verify.exe が無い。make を先に")
+        rep.add("verify", False, "build/verify が無い。make を先に")
         return
     got = subprocess.run([str(exe)], capture_output=True, text=True,
                          encoding="utf-8").stdout
@@ -116,9 +128,9 @@ def step_verify(rep, update):
 
 
 def step_statetest(rep, roms, midi):
-    exe = BUILD / "statetest.exe"
+    exe = find_exe("statetest")
     if not exe.exists():
-        rep.add("statetest", False, "build/statetest.exe が無い")
+        rep.add("statetest", False, "build/statetest が無い")
         return
     log = WORK / "statetest.log"
     rc = run([exe, roms, midi, "--warm", "2.0", "--steps", "50"], out=log, err=log)
@@ -144,7 +156,7 @@ def render(roms, name, midi, seconds, extra=()):
     log = WORK / ("%s.log" % name)
     out = WORK / ("%s.out" % name)
     t0 = time.time()
-    rc = run([BUILD / "render.exe", roms, midi, wav, "%.3f" % seconds,
+    rc = run([find_exe("render"), roms, midi, wav, "%.3f" % seconds,
               "--boot", "%.3f" % BOOT_AT, "-v"] + list(extra), out=out, err=log)
     took = time.time() - t0
     if rc != 0 or not wav.exists():
@@ -201,9 +213,9 @@ def step_threading(rep, roms, first):
 
 def step_xg(rep, roms):
     """定義表の番地・大きさ・範囲が firmware と合っているか。音は見ない"""
-    exe = BUILD / "xgtest.exe"
+    exe = find_exe("xgtest")
     if not exe.exists():
-        rep.add("xg", False, "build/xgtest.exe が無い")
+        rep.add("xg", False, "build/xgtest が無い")
         return
     log = WORK / "xgtest.log"
     rc = run([exe, roms], out=log, err=log)
@@ -220,9 +232,9 @@ def step_xg(rep, roms):
 
 def step_sampling(rep, roms):
     """パネルで録音して試聴し、録った 440Hz が返ってくるか"""
-    exe = BUILD / "samptest.exe"
+    exe = find_exe("samptest")
     if not exe.exists():
-        rep.add("sampling", False, "build/samptest.exe が無い")
+        rep.add("sampling", False, "build/samptest が無い")
         return
     log = WORK / "samptest.log"
     rc = run([exe, roms], out=log, err=log)

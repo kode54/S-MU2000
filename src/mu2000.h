@@ -287,7 +287,7 @@ private:
 public:
 	// 速さの手掛かり。1 サンプルあたり実行ループを何周したか
 	u64 m_loops = 0, m_timer_fires = 0, m_event_fires = 0;
-	// 区間ごとの所要時間（QueryPerformanceCounter の刻み）。
+	// 区間ごとの所要時間（ns）。
 	// **set_profile(true) のときだけ測る**（1 サンプルにつき 3 回読むので、
 	// 常に測ると 0.3% ほど食う）
 	u64 m_t_cpu = 0, m_t_swpm = 0, m_t_swps = 0, m_t_n = 0;
