@@ -15,8 +15,8 @@
 #   Windows   WASAPI / WinMM / Direct3D 11 / VST3
 #   macOS     CoreAudio / CoreMIDI（gui と vst3 はまだ）
 #
-# **JIT は Windows の x86-64 だけ。** ほかでは解釈実行に落ちる（音は同じ）。
-# Apple Silicon では x86-64 の機械語を吐けないので、そのぶん遅い
+# The SH2 and MEG JITs run on x86-64 (Windows / macOS) and arm64 (macOS).
+# Anything else falls back to the interpreter (the output is identical)
 
 UNAME_S := $(shell uname -s)
 
@@ -67,6 +67,7 @@ SRCS := \
 	src/mame/machine/sci4.cpp \
 	src/mame/cpu/sh.cpp \
 	src/mame/cpu/sh2.cpp 	src/mame/cpu/sh2_jit.cpp \
+	src/compat/a64asm.cpp \
 	src/mame/cpu/sh7042.cpp \
 	src/mame/cpu/sh_adc.cpp \
 	src/mame/cpu/sh_bsc.cpp \
