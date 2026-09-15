@@ -106,8 +106,12 @@ Copyright (c) 2014-2026 Omar Cornut
 https://github.com/ocornut/imgui
 
 Version 1.92.9b (commit f1cc2ae1). The core and the Win32 / Direct3D 11
-backends are used, unmodified, for the PC editor window of gui.exe. Full
-text in third_party/imgui/LICENSE.txt.
+backends are used, unmodified, for the PC editor window of gui.exe.
+
+The macOS backends -- imgui_impl_osx.{h,mm}, imgui_impl_metal.{h,mm} and
+imgui_impl_metal4.{h,mm} -- are taken unmodified from Dear ImGui 1.93.0 WIP
+(the pinned 1.92.9b release does not carry them). Same MIT license and
+copyright holder. Full text in third_party/imgui/LICENSE.txt.
 
   Permission is hereby granted, free of charge, to any person obtaining a
   copy of this software and associated documentation files (the

@@ -29,7 +29,7 @@ rom ディレクトリは `python3 tools/make_roms.py <吸い出したもの...>
 
 | | なぜ |
 |---|---|
-| `gui` | 画面が Direct3D 11 と Win32（Dear ImGui の backend が win32/dx11 しか入っていない） |
+| `gui` | 画面が Direct3D 11 と Win32。macOS 用の backend（osx / metal / metal4）は `third_party/imgui/backends/` に取り込んだが、`src/gui.cpp` の窓まわりはまだ Win32 のまま |
 | VST3 | 画面が上と同じ。バンドルの形も `Contents/MacOS/` に変える必要がある |
 | `midisend` / `rec` | WinMM と WASAPI の取り込みを直に叩いている |
 
