@@ -1,22 +1,21 @@
 // license:BSD-3-Clause
 //
 // MU2000 の MIDI OUT はバイトの列（実機と同じ 31250bps の直列）で出てくるが、
-// AUv3 の MIDIOutputEventBlock は **1 メッセージずつ**渡す決まりになっている。
-// その間を埋める。
+// 渡す先は 1 メッセージずつを欲しがる——AUv3 の MIDIOutputEventBlock も、
+// CoreMIDI の MIDISend も。その間を埋める。
 //
 // **確保も錠もしない。** 音声スレッドの中で回る。
 // 入りきらないメッセージ（8KB を超える SysEx）は、そのメッセージだけ捨てる。
 
-#ifndef S_MU2000_AUV3_MIDI_SPLIT_H
-#define S_MU2000_AUV3_MIDI_SPLIT_H
+#ifndef S_MU2000_UI_MIDI_SPLIT_H
+#define S_MU2000_UI_MIDI_SPLIT_H
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 
-namespace smu2000 {
-namespace auv3 {
+namespace ui {
 
 class midi_split
 {
@@ -129,7 +128,6 @@ private:
 	bool    m_over = false;
 };
 
-} // namespace auv3
-} // namespace smu2000
+} // namespace ui
 
-#endif // S_MU2000_AUV3_MIDI_SPLIT_H
+#endif // S_MU2000_UI_MIDI_SPLIT_H

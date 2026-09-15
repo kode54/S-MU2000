@@ -73,6 +73,14 @@ private:
 	void run();
 	void push(const s16 *frames, u32 n);
 
+#ifdef __APPLE__
+public:
+	// CoreAudio の取り込み（audio_in_mac.cpp）から積む。
+	// あちらの手続きはクラスの外にいるので、ここだけ外へ開けてある
+	void push_frames(const s16 *frames, u32 n);
+private:
+#endif
+
 	std::thread       m_thread;
 	std::atomic<bool> m_quit{false};
 	std::atomic<bool> m_running{false};

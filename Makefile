@@ -179,6 +179,7 @@ endif
 AUDIO_OUT_OBJ := $(AUDIO_OUT_SRC:%.cpp=$(BUILD)/%.o)
 MIDI_IN_OBJS  := $(MIDI_IN_SRCS:%.cpp=$(BUILD)/%.o)
 
+
 # gui は実機のフロントパネル風の画面を出す
 UI_SRCS := src/ui/panel.cpp src/ui/editor.cpp src/ui/effects.cpp src/ui/png.cpp \
            $(AUDIO_OUT_SRC) src/ui/audio_in.cpp $(MIDI_IN_SRCS) src/ui/midi_out.cpp \
@@ -191,7 +192,54 @@ IMGUI_DIR  := third_party/imgui
 IMGUI_SRCS := $(IMGUI_DIR)/imgui.cpp $(IMGUI_DIR)/imgui_draw.cpp $(IMGUI_DIR)/imgui_tables.cpp               $(IMGUI_DIR)/imgui_widgets.cpp $(IMGUI_DIR)/backends/imgui_impl_win32.cpp               $(IMGUI_DIR)/backends/imgui_impl_dx11.cpp
 PC_SRCS    := src/ui/pc_editor.cpp src/ui/pc_window.cpp src/ui/xg_ui.cpp src/ui/overview.cpp src/ui/fx_editor.cpp src/ui/fx_help.cpp
 PC_OBJS    := $(IMGUI_SRCS:%.cpp=$(BUILD)/imgui/%.o) $(PC_SRCS:%.cpp=$(BUILD)/imgui/%.o)
+ifdef MACOS
+IMGUI_FLAGS := -I $(IMGUI_DIR)
+else
 IMGUI_FLAGS := -I $(IMGUI_DIR) -DIMGUI_IMPL_WIN32_DISABLE_GAMEPAD
+endif
+
+ifdef MACOS
+# macOS の画面。実機のフロントパネルを出して、その場で鳴らす。
+# 絵は Windows 版と同じ ui::panel が描き、GDI は gdicompat_mac が肩代わりする
+# PC エディタの画面。ImGui の中核と、macOS 用の backend（osx と metal）
+IMGUI_MAC_SRCS := $(IMGUI_DIR)/imgui.cpp $(IMGUI_DIR)/imgui_draw.cpp \
+                  $(IMGUI_DIR)/imgui_tables.cpp $(IMGUI_DIR)/imgui_widgets.cpp \
+                  $(IMGUI_DIR)/backends/imgui_impl_osx.mm \
+                  $(IMGUI_DIR)/backends/imgui_impl_metal.mm
+PC_MAC_SRCS    := src/ui/pc_window_mac.mm src/ui/pc_editor.cpp src/ui/xg_ui.cpp \
+                  src/ui/overview.cpp src/ui/fx_editor.cpp src/ui/fx_help.cpp
+IMGUI_MAC_OBJS := $(IMGUI_MAC_SRCS:%.cpp=$(BUILD)/imgui/%.o)
+IMGUI_MAC_OBJS := $(IMGUI_MAC_OBJS:%.mm=$(BUILD)/imgui/%.o)
+PC_MAC_OBJS    := $(PC_MAC_SRCS:%.cpp=$(BUILD)/imgui/%.o)
+PC_MAC_OBJS    := $(PC_MAC_OBJS:%.mm=$(BUILD)/imgui/%.o)
+
+GUI_MAC_SRCS := src/gui_mac.mm src/compat/gdicompat_mac.mm \
+                src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
+                src/ui/effects.cpp src/ui/png.cpp src/xg/model.cpp \
+                $(AUDIO_OUT_SRC) $(MIDI_IN_SRCS)
+GUI_MAC_OBJS := $(GUI_MAC_SRCS:%.cpp=$(BUILD)/%.o)
+GUI_MAC_OBJS := $(GUI_MAC_OBJS:%.mm=$(BUILD)/%.o)
+
+$(BUILD)/src/%.o: src/%.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -ObjC++ -fobjc-arc -c -o $@ $<
+
+$(BUILD)/imgui/%.o: %.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(IMGUI_FLAGS) -ObjC++ -fobjc-arc -c -o $@ $<
+
+# gui_mac.mm は ImGui も触るので、そちらの取り込み先も要る
+$(BUILD)/src/gui_mac.o: CXXFLAGS += $(IMGUI_FLAGS)
+
+$(BUILD)/gui_mac$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(GUI_MAC_OBJS) \
+                        $(IMGUI_MAC_OBJS) $(PC_MAC_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -framework Cocoa -framework Metal \
+	       -framework MetalKit -framework QuartzCore -framework GameController \
+	       $(FW_DRAW) $(FW_AUDIO) $(FW_MIDI)
+
+gui_mac: $(BUILD)/gui_mac$(EXE)
+endif
 
 $(BUILD)/imgui/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -452,4 +500,4 @@ clean:
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
 .PHONY: all clean regen gui vst3 install-vst3 probe test test-update \
-        auv3 install-auv3 auval autest paneltest
+        auv3 install-auv3 auval autest paneltest gui_mac

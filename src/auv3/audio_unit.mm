@@ -20,7 +20,7 @@
 
 #import <AVFoundation/AVFoundation.h>
 
-#include "midi_split.h"
+#include "ui/midi_split.h"
 #include "vst3/engine.h"
 
 #include <algorithm>
@@ -39,7 +39,7 @@ struct scratch {
 	// A/D INPUT を引くための AudioBufferList（2ch ぶん場所を取っておく）
 	uint8_t            in_abl_mem[sizeof(AudioBufferList) + sizeof(AudioBuffer)] = {};
 	std::vector<uint8_t> tx;                 // MIDI OUT の生バイト
-	smu2000::auv3::midi_split split;         // それをメッセージに切る
+	ui::midi_split split;         // それをメッセージに切る
 
 	AudioBufferList *in_abl() { return reinterpret_cast<AudioBufferList *>(in_abl_mem); }
 

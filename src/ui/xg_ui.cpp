@@ -11,7 +11,12 @@
 #include <cstring>
 #include <vector>
 
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <cstdlib>
+#include <sys/stat.h>
+#endif
 
 namespace ui {
 namespace xgui {
@@ -567,13 +572,30 @@ bool g_help = true;
 int  g_lang = 0;
 bool g_loaded = false;
 
+// 覚えておく物の置き場。
+//   Windows  %LOCALAPPDATA%\S-MU2000\editor.ini
+//   macOS    ~/Library/Application Support/S-MU2000/editor.ini
 std::string settings_file()
 {
+#ifdef _WIN32
 	char buf[1024];
 	const DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", buf, sizeof(buf));
 	if (n == 0 || n >= sizeof(buf))
 		return {};
 	return std::string(buf) + "\\S-MU2000\\editor.ini";
+#else
+	const char *home = std::getenv("HOME");
+	if (!home || !*home)
+		return {};
+	// 親から順に掘る（無い家もある）
+	std::string dir = home;
+	for (const char *part : { "Library", "Application Support", "S-MU2000" }) {
+		dir += "/";
+		dir += part;
+		::mkdir(dir.c_str(), 0755);
+	}
+	return dir + "/editor.ini";
+#endif
 }
 
 void load_settings()
@@ -601,7 +623,10 @@ void save_settings()
 	const std::string path = settings_file();
 	if (path.empty())
 		return;
+	// 置き場を作る（macOS は settings_file() が掘り終えている）
+#ifdef _WIN32
 	CreateDirectoryA(path.substr(0, path.rfind('\\')).c_str(), nullptr);
+#endif
 	if (FILE *f = std::fopen(path.c_str(), "wb")) {
 		std::fprintf(f, "help=%d\nlang=%s\n", g_help ? 1 : 0, LANGS[g_lang].code);
 		std::fclose(f);
