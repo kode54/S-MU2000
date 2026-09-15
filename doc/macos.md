@@ -18,6 +18,9 @@ build/boot     <rom ディレクトリ> [サイクル数]       起動の確認
 build/blocktime <rom> <MIDI> <フレーム数> [秒] [回数]  1 ブロックの所要時間を測る
 ```
 
+rom ディレクトリは `python3 tools/make_roms.py <吸い出したもの...> -o roms` で
+組む（zip でもディレクトリでもよい。[dump/README.md](dump/README.md)）。
+
 `make test` の回帰試験も同じように走る（[testing.md](testing.md)）。
 **音は Windows と同じもの**が出る。`tests/*.json` の指紋は Windows で焼いた
 ものだが、macOS でもそのまま合う。

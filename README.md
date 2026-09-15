@@ -219,6 +219,21 @@ rom ディレクトリには次を置く。
 | `dump/xv364a0.ic49` ほか 3 つ | 波形 ROM 8MB × 4 |
 | `standin/sin-table.bin` | MEG が使う sin 表 64KB |
 
+**並べるのは `tools/make_roms.py` にやらせる。**
+
+```
+python tools/make_roms.py <吸い出したもの...> -o roms
+```
+
+入力は zip（MAME の romset）でもディレクトリでもよく、混ぜてもよい。
+ディレクトリは再帰的に見て、中の zip も開く。**中身の SHA1 で見分ける**ので、
+ファイル名は何でもよく、バイトスワップされていれば直す。
+プログラム ROM の上位と下位（IC25 と IC24）を 4MB に組む手順もここが持っている。
+
+**EX（v2.01）が見つかればそれを使う。** `tests/*.json` の指紋は EX で焼いて
+あるので、v1.01 で組むと `make test` が食い違う（音は ±2 程度しか違わないが、
+指紋は PCM の SHA1 なので 1 ビットでも外れる）。敢えて v1.01 にするなら `--v1`。
+
 ## ビルドについて
 
 Windows と macOS で作れる。`make` だけでよい（`Makefile` が `uname -s` で
