@@ -51,6 +51,15 @@ public:
 	void start();
 
 	status state() const { return m_state.load(std::memory_order_acquire); }
+
+	// 起動が終わる（か失敗する）まで待つ。ready なら true。
+	//
+	// **音声スレッドからは呼ばない。** 呼ぶのは器を用意するとき
+	// （AUv3 なら allocateRenderResources、VST3 なら setActive）。
+	// ここで待たずに描き出しを始めると、起動が終わるまでの間ずっと無音を返し、
+	// その間に届いた MIDI は溜まるだけになる。実時間より速く回すホスト
+	// （ファイルを鳴らす種類のもの）では、これが曲の頭の十数秒ぶんに化ける
+	bool wait_ready(double seconds);
 	// state() が failed のときの理由。ready でも「代用品を使った」等が入る
 	std::string message() const;
 
@@ -65,6 +74,12 @@ public:
 	void midi(const uint8_t *bytes, size_t n, int port = 0);
 	// 両方の口の全チャンネルにオールノートオフ + リセットオールコントローラ
 	void all_notes_off();
+
+	// MIDI OUT。実機の OUT 端子（SH7043 の SCI ch0）から firmware が送り出した
+	// もの——XG の問い合わせへの返事、ダンプ要求への応答など——を取り出す。
+	// **fill() と同じ糸から、fill() の後に呼ぶこと。**
+	// dst へ入れたバイト数を返す（無ければ 0）
+	size_t midi_out(uint8_t *dst, size_t max);
 
 	// n サンプルぶん作る。左右は別々の配列（VST3 はそういう渡し方をする）。
 	// in_l / in_r はホストの周波数で n サンプルぶんの A/D INPUT（無ければ nullptr）
@@ -158,11 +173,46 @@ private:
 	ui::bridge m_bridge;
 	ui::driver m_drv;
 
+	// ---- MIDI の絞り（実機の線と同じ速さでしか入れない）
+	//
+	// **ホストが渡してきたものを、そのまま音源へ流し込まない。**
+	// 実機の MIDI IN は 31250bps の直列で、1 バイト 10 ビットぶん＝ 320us
+	// かかる。DAW やプレイヤはそんなことは知らないので、曲の頭の音色指定
+	// 数十個を同じ時刻にまとめて寄越すことがある。まとめて入れると、
+	// firmware がリセットの最中に受け切れず、いくつかの音色指定が落ちて
+	// そのパートだけ初期値（グランドピアノ）のまま鳴る。
+	//
+	// ここで自前の列に受けておき、線が空くのを見ながら 1 バイトずつ渡す。
+	// 落とさない。順番も変えない。ただ**実機と同じ速さに均す**だけ
+	static constexpr size_t IN_FIFO = 1 << 16, IN_FIFO_MASK = IN_FIFO - 1;
+	uint8_t m_in_fifo[2][IN_FIFO] = {};
+	size_t  m_in_head[2] = {0, 0}, m_in_tail[2] = {0, 0};
+	uint64_t m_in_dropped = 0;         // 列が溢れて捨てたバイト数（記録用）
+	void push_midi(uint8_t b, int port);
+	void drain_midi();                 // 1 サンプルにつき 1 回
+
 	// 起動前や、機械を他が使っている間に来た MIDI。口ごとに持つ。音声スレッドしか触らない
 	std::vector<uint8_t> m_pending[2];
+
+	// ---- MIDI OUT の写し。
+	//
+	// **音源の溜めを直に引いてはいけない。** fill() の中で pump_out() が
+	// 先に引いてパネルの画面へ渡してしまうので、後から midi_out_take() を
+	// 呼んでも空になっている。pump_out() が渡してくるものをここへ写し、
+	// midi_out() はこちらを読む。どちらも音声スレッドなので錠は要らない
+	static constexpr int TX_RING = 4096, TX_MASK = TX_RING - 1;
+	uint8_t m_tx[TX_RING] = {};
+	int     m_tx_w = 0, m_tx_r = 0;
+	void tx_push(uint8_t v);
 };
 
 } // namespace vst3
+
+// この engine は VST3 専用ではない（VST3 の型は一つも出てこない）。
+// AUv3（src/auv3/）も同じものを使うので、そちら側が vst3 と書かずに済むよう
+// 別名を用意しておく。置き場所は履歴の都合で src/vst3/ のまま
+namespace plug = vst3;
+
 } // namespace smu2000
 
 #endif // S_MU2000_VST3_ENGINE_H

@@ -2,6 +2,8 @@
 
 #include "engine.h"
 
+#include "compat/platform.h"
+#include "hostpaths.h"
 #include "mu2000.h"
 #include "nvram.h"
 #include "smartmedia.h"
@@ -10,10 +12,10 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <mutex>
-
-#include <windows.h>
+#include <thread>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -22,146 +24,84 @@
 namespace smu2000 {
 namespace vst3 {
 
+
+
+// ---- 起動後の姿の写し。
+//
+// firmware の起動は実時間で 1-2 秒、遅い機械ならもっとかかる。中身は毎回
+// 同じ（同じ ROM・同じ設定なら同じ所に落ち着く）ので、**一度やったら写して
+// おいて、次からは戻すだけにする**。
+//
+// 鍵は「プログラム ROM の中身」と「起動時の NVRAM の中身」の両方。
+// どちらかが変われば写しは使えない（設定を変えたら起動のしかたも変わる）。
+// 保存の形が変わったときは load_state が版を見て断るので、そのまま作り直される。
+
 namespace {
 
-// ---- プラグイン本体（DLL）の置かれている場所
-
-std::string module_dir()
+u64 fnv1a(const u8 *p, size_t n)
 {
-	HMODULE self = nullptr;
-	if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-	                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-	                        reinterpret_cast<LPCSTR>(&module_dir), &self))
-		return {};
-	char buf[MAX_PATH * 2] = {};
-	const DWORD n = GetModuleFileNameA(self, buf, sizeof(buf));
-	if (!n || n >= sizeof(buf))
-		return {};
-	std::string s(buf, n);
-	const size_t slash = s.find_last_of("\\/");
-	return slash == std::string::npos ? std::string() : s.substr(0, slash);
+	u64 h = 0xcbf29ce484222325ull;
+	for (size_t i = 0; i < n; i++) {
+		h ^= p[i];
+		h *= 0x100000001b3ull;
+	}
+	return h;
 }
 
-std::string env(const char *name)
+// 写しの名前。鍵は「ROM の中身」「起動時の NVRAM の中身」「回した秒数」
+std::string boot_cache_name(u64 rom_key, u64 nv_key)
 {
-	char buf[MAX_PATH * 4];
-	const DWORD n = GetEnvironmentVariableA(name, buf, sizeof(buf));
-	return (n && n < sizeof(buf)) ? std::string(buf, n) : std::string();
+	char name[64];
+	std::snprintf(name, sizeof(name), "/%016llx-%016llx.bin",
+	              (unsigned long long)rom_key, (unsigned long long)nv_key);
+	return name;
 }
 
-bool is_file(const std::string &p)
+// 書ける置き場（ここへ残す）
+std::string boot_cache_path(u64 rom_key, u64 nv_key)
 {
-	const DWORD a = GetFileAttributesA(p.c_str());
-	return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+	const std::string dir = state_dir("bootcache");
+	return dir.empty() ? std::string() : dir + boot_cache_name(rom_key, nv_key);
 }
 
-// そのディレクトリが ROM 置き場かどうか
-bool has_roms(const std::string &dir)
+// バンドルに焼いてある写し（読むだけ）。作るときに用意しておくと、
+// 初めて挿したときも待たされない
+std::string baked_cache_path(u64 rom_key, u64 nv_key)
 {
-	return !dir.empty() && is_file(dir + "\\mu2000_flash.bin");
+	const std::string dir = resource_dir();
+	return dir.empty() ? std::string()
+	                   : dir + "/bootcache" + boot_cache_name(rom_key, nv_key);
 }
 
-// roms.txt に書かれた場所を読む（1 行目だけ）
-std::string read_pointer_file(const std::string &path)
+bool read_blob(const std::string &path, std::vector<u8> &out)
 {
 	std::FILE *f = std::fopen(path.c_str(), "rb");
 	if (!f)
-		return {};
-	char line[1024] = {};
-	if (!std::fgets(line, sizeof(line), f)) { std::fclose(f); return {}; }
+		return false;
+	std::fseek(f, 0, SEEK_END);
+	const long n = std::ftell(f);
+	std::fseek(f, 0, SEEK_SET);
+	if (n <= 0) { std::fclose(f); return false; }
+	out.resize(size_t(n));
+	const bool ok = std::fread(out.data(), 1, out.size(), f) == out.size();
 	std::fclose(f);
-	std::string s(line);
-	// メモ帳などが付ける BOM を落とす。これがあると場所を見失う
-	if (s.size() >= 3 && (unsigned char)s[0] == 0xef && (unsigned char)s[1] == 0xbb &&
-	    (unsigned char)s[2] == 0xbf)
-		s.erase(0, 3);
-	while (!s.empty() && (s.back() == '\r' || s.back() == '\n' ||
-	                      s.back() == ' '  || s.back() == '\t'))
-		s.pop_back();
-	return s;
+	return ok;
 }
 
-// ---- 記録。画面が無いので、うまくいかなかったときはここを見てもらう
-
-std::string log_path()
+// 一時ファイルに書いてから置き換える。何枚も同時に起動しても壊れない
+void write_blob(const std::string &path, const std::vector<u8> &data)
 {
-	const std::string base = env("LOCALAPPDATA");
-	if (base.empty())
-		return {};
-	const std::string dir = base + "\\S-MU2000";
-	CreateDirectoryA(dir.c_str(), nullptr);
-	return dir + "\\log.txt";
-}
-
-void logf(const char *fmt, ...)
-{
-	static const std::string path = log_path();
-	if (path.empty())
-		return;
-	const bool fresh = !is_file(path);
-	std::FILE *f = std::fopen(path.c_str(), "ab");
+	const std::string tmp = path + ".tmp";
+	std::FILE *f = std::fopen(tmp.c_str(), "wb");
 	if (!f)
 		return;
-	if (fresh)
-		std::fwrite("\xef\xbb\xbf", 1, 3, f);   // UTF-8 の印。無いと化けて読まれる
-	SYSTEMTIME t;
-	GetLocalTime(&t);
-	std::fprintf(f, "%04d-%02d-%02d %02d:%02d:%02d  ", t.wYear, t.wMonth, t.wDay,
-	             t.wHour, t.wMinute, t.wSecond);
-	va_list ap;
-	va_start(ap, fmt);
-	std::vfprintf(f, fmt, ap);
-	va_end(ap);
-	std::fputc('\n', f);
-	std::fclose(f);
-}
-
-// ROM 置き場を探す。見つかった場所を返す。無ければ空で、探した場所が tried に入る
-std::string find_roms(std::string &tried)
-{
-	std::vector<std::string> cand;
-
-	// 1. 環境変数。一番強い
-	const std::string ev = env("S_MU2000_ROMS");
-	if (!ev.empty())
-		cand.push_back(ev);
-
-	const std::string dir = module_dir();
-	if (!dir.empty()) {
-		// 2. バンドルの Resources。
-		//    <名前>.vst3/Contents/x86_64-win/ に DLL がいるので 1 つ上
-		cand.push_back(dir + "\\..\\Resources");
-		cand.push_back(dir + "\\..\\Resources\\roms");
-		// 3. DLL のすぐ横
-		cand.push_back(dir + "\\roms");
-		cand.push_back(dir);
-		// 4. 場所を書いた紙
-		const std::string notes[2] = { dir + "\\..\\Resources\\roms.txt",
-		                               dir + "\\roms.txt" };
-		for (const std::string &p : notes) {
-			const std::string s = read_pointer_file(p);
-			if (!s.empty())
-				cand.push_back(s);
-		}
+	const bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();
+	if (std::fclose(f) != 0 || !ok) {
+		std::remove(tmp.c_str());
+		return;
 	}
-
-	// 5. 決め打ちの置き場
-	const std::string local = env("LOCALAPPDATA");
-	if (!local.empty())
-		cand.push_back(local + "\\S-MU2000\\roms");
-	const std::string home = env("USERPROFILE");
-	if (!home.empty())
-		cand.push_back(home + "\\Documents\\S-MU2000\\roms");
-
-	for (const std::string &c : cand) {
-		char full[MAX_PATH * 2] = {};
-		const DWORD n = GetFullPathNameA(c.c_str(), sizeof(full), full, nullptr);
-		const std::string p = (n && n < sizeof(full)) ? std::string(full, n) : c;
-		if (has_roms(p))
-			return p;
-		tried += "  " + p + "\n";
-	}
-	return {};
+	if (std::rename(tmp.c_str(), path.c_str()) != 0)
+		std::remove(tmp.c_str());
 }
 
 } // namespace
@@ -240,6 +180,7 @@ void engine::boot()
 	logf("ROM: %s", dir.c_str());
 	ui::driver::publish_message(m_bridge, "ROM 読み込み中");
 
+	const uint64_t t_rom = smu2000::now_ns();
 	mu2000 *mu = new mu2000;
 	std::string warn;
 	{
@@ -258,21 +199,21 @@ void engine::boot()
 			warn = shared->warn;
 			logf("ROM は読み込み済みのものを借りた");
 		} else {
-			if (!mu->load_program(dir + "\\mu2000_flash.bin") ||
-			    !mu->load_wave(dir + "\\dump")) {
+			if (!mu->load_program(dir + "/mu2000_flash.bin") ||
+			    !mu->load_wave(dir + "/dump")) {
 				m_message = mu->error();
 				logf("%s", m_message.c_str());
 				delete mu;
 				m_state.store(status::failed, std::memory_order_release);
 				return;
 			}
-			if (!mu->load_sintab(dir + "\\standin\\sin-table.bin")) {
+			if (!mu->load_sintab(dir + "/standin/sin-table.bin")) {
 				warn = mu->error();
 				logf("警告: %s", warn.c_str());
 			}
 			// LCD の字の絵。無くても音は出るが、画面に何も映らなくなる
-			if (!mu->load_lcd_font(dir + "\\hd44780u_b04.bin") &&
-			    !mu->load_lcd_font(dir + "\\standin\\hd44780u_b04.bin"))
+			if (!mu->load_lcd_font(dir + "/hd44780u_b04.bin") &&
+			    !mu->load_lcd_font(dir + "/standin/hd44780u_b04.bin"))
 				logf("警告: %s", mu->error().c_str());
 			shared = std::make_shared<rom_set>();
 			shared->prog   = mu->program_rom();
@@ -287,6 +228,8 @@ void engine::boot()
 		m_roms = shared;
 	}
 
+	logf("ROM 読み込み: %.0f ms", 1e-6 * double(smu2000::now_ns() - t_rom));
+
 	mu->set_threaded(true);
 	// gui / live が残した設定で起動する。**読むだけで書かない。**VST3 の中で
 	// 変えたものは DAW のプロジェクトに残るし、何枚も挿されたときに
@@ -297,34 +240,106 @@ void engine::boot()
 
 	ui::driver::publish_message(m_bridge, "MU2000 起動中");
 
-	// 起動を待つ。ここを待たずに MIDI を流すと音色指定が全部捨てられる
-	LARGE_INTEGER t0;
-	QueryPerformanceCounter(&t0);
-	const int64_t limit = int64_t(30.0 * NATIVE_RATE);
-	int64_t i = 0;
-	for (; i < limit; i++) {
-		if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
-			delete mu;
-			return;
+	// ---- 起動を飛ばす。
+	//
+	// 一度起動したら、そのときの姿を写しておく。次からは戻すだけでよい。
+	// 鍵が合わなければ（ROM か設定が変わっていれば）普通に起動して写し直す。
+	// S_MU2000_NO_BOOT_CACHE=1 で切れる（食い違いを疑うとき用）
+	const uint64_t t0 = smu2000::now_ns();
+	const std::vector<u8> &nv = mu->nvram();
+	const u64 rk = nvram::rom_key(*mu);
+	const u64 nk = fnv1a(nv.data(), nv.size());
+	// 起動をどこまで回すか。0 なら midi_ready で止める（既定）。
+	//
+	// **midi_ready から先まで回しても、鳴る音は変わらない。**
+	// 起動 8 秒と 30 秒で同じ曲を鳴らして突き合わせたところ、1 秒ごとの
+	// rms の差は 0.0-0.1% しかなかった（音色も並びも同じ）。midi_ready の
+	// 時点で機械の状態そのものは確かにまだ動いているが、その違いは
+	// 音に出ない。だから既定はここで止め、**render と同じ姿**から始める。
+	// 道具ごとに違う姿から始めると、食い違ったときに切り分けられない。
+	//
+	// 最後まで回したければ S_MU2000_BOOT_SECONDS に秒数を渡す。
+	// **鍵に混ぜる。** 長さを変えたのに前の写しを使うと、
+	// 途中で止めた姿から始めてしまう
+	double want = 0.0;
+	if (const char *e = std::getenv("S_MU2000_BOOT_SECONDS"))
+		want = std::atof(e);
+
+	const char *no_cache = std::getenv("S_MU2000_NO_BOOT_CACHE");
+	const std::string cache =
+	    (no_cache && *no_cache && *no_cache != '0')
+	        ? std::string()
+	        : boot_cache_path(rk, nk ^ (u64(want * 1000.0) * 0x9e3779b97f4a7c15ull));
+
+	// 焼いてあるものを先に、次に自分で残したものを見る
+	bool skipped = false;
+	if (!cache.empty()) {
+		const u64 dk = nk ^ (u64(want * 1000.0) * 0x9e3779b97f4a7c15ull);
+		const std::string baked = baked_cache_path(rk, dk);
+		const std::string tries[2] = { baked, cache };
+		for (const std::string &p : tries) {
+			if (p.empty())
+				continue;
+			std::vector<u8> blob;
+			std::string lerr;
+			if (!read_blob(p, blob))
+				continue;
+			if (mu->load_state(blob.data(), blob.size(), lerr)) {
+				skipped = true;
+				logf("起動を飛ばした: %s（%.0f ms）", p.c_str(),
+				     1e-6 * double(smu2000::now_ns() - t0));
+				break;
+			}
+			// 版違いなど。自分で残したものなら捨てて作り直す
+			logf("起動の写しを使えない（%s）: %s", lerr.c_str(), p.c_str());
+			if (p == cache)
+				std::remove(p.c_str());
 		}
-		if (mu->midi_ready())
-			break;
-		s32 l = 0, r = 0;
-		mu->run_sample(l, r);
-	}
-	if (i >= limit) {
-		m_message = "MU2000 が起動しなかった（ROM が壊れている可能性）";
-		logf("%s", m_message.c_str());
-		delete mu;
-		m_state.store(status::failed, std::memory_order_release);
-		return;
 	}
 
-	LARGE_INTEGER t1, f;
-	QueryPerformanceCounter(&t1);
-	QueryPerformanceFrequency(&f);
-	logf("起動: 音 %.2f 秒ぶん / 実時間 %.2f 秒", double(i) / NATIVE_RATE,
-	     double(t1.QuadPart - t0.QuadPart) / double(f.QuadPart));
+	// 起動を走らせる。既定は midi_ready まで（上の want を見よ）。
+	//
+	// **どこで止めても、口を開けるのは回し終えてから。**
+	// 回している間に来た MIDI は engine::midi() が溜めておき、ready に
+	// なってから順に流れるので、起動の途中の機械に書き込むことはない。
+	// 出てくる音はここで捨てる（測ったところ起動中の MU2000 は 32 秒ぶん
+	// 丸ごと無音なので、捨てるものは実際には無い）
+	if (!skipped) {
+		const int64_t need  = int64_t(want * NATIVE_RATE);
+		const int64_t limit = int64_t((want > 30.0 ? want + 10.0 : 40.0) * NATIVE_RATE);
+
+		int64_t ready_at = -1;
+		int64_t i = 0;
+		for (; i < limit; i++) {
+			if (!(i & 4095) && m_abort.load(std::memory_order_relaxed)) {
+				delete mu;
+				return;
+			}
+			if (ready_at < 0 && mu->midi_ready())
+				ready_at = i;
+			// MIDI を取りこぼさなくなり、かつ決めた時間まで回したら終わり
+			if (ready_at >= 0 && i >= need)
+				break;
+			s32 l = 0, r = 0;
+			mu->run_sample(l, r);      // **音はここで捨てる**
+		}
+		if (ready_at < 0) {
+			m_message = "MU2000 が起動しなかった（ROM が壊れている可能性）";
+			logf("%s", m_message.c_str());
+			delete mu;
+			m_state.store(status::failed, std::memory_order_release);
+			return;
+		}
+		logf("起動: MIDI が通り始めたのが %.2f 秒、回したのが %.2f 秒ぶん"
+		     " / 実時間 %.2f 秒",
+		     double(ready_at) / NATIVE_RATE, double(i) / NATIVE_RATE,
+		     1e-9 * double(smu2000::now_ns() - t0));
+
+		if (!cache.empty()) {
+			write_blob(cache, mu->save_state());
+			logf("起動の写しを残した: %s", cache.c_str());
+		}
+	}
 
 	m_mu = mu;
 	m_message = warn.empty() ? std::string("ROM: ") + dir
@@ -349,6 +364,18 @@ void engine::build_table()
 		                      + 0.08 * std::cos(4.0 * M_PI * t);
 		m_tab[k] = float(sinc * w);
 	}
+}
+
+bool engine::wait_ready(double seconds)
+{
+	const uint64_t limit = uint64_t(seconds * 1e9);
+	const uint64_t t0 = smu2000::now_ns();
+	while (state() == status::loading) {
+		if (smu2000::now_ns() - t0 > limit)
+			return false;
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	return state() == status::ready;
 }
 
 void engine::set_output_rate(double rate)
@@ -377,8 +404,57 @@ void engine::flush_resampler()
 	m_pos     = 0.0;
 }
 
+// ホストから来たものを自前の列へ。溢れたら捨てる（65536 バイトは
+// バルクダンプが通る大きさ。ここが溢れるのは何かがおかしいとき）
+void engine::push_midi(uint8_t b, int port)
+{
+	const size_t next = (m_in_head[port] + 1) & IN_FIFO_MASK;
+	if (next == m_in_tail[port]) {
+		m_in_dropped++;
+		return;
+	}
+	m_in_fifo[port][m_in_head[port]] = b;
+	m_in_head[port] = next;
+}
+
+// 1 サンプルにつき 1 回。線が空いていれば 1 バイトだけ渡す。
+//
+// **音源の受信線そのものが 31250bps で流れる**ので、こちらは「線に 1 バイト
+// 以上溜めない」ことだけを守ればよい。そうすれば渡す速さは線の速さに一致する。
+// まとめて入れてしまうと線の中に何十バイトも積み上がり、firmware が
+// 受け切れないところまで行ってしまう
+void engine::drain_midi()
+{
+	// 切り分け用。1 にすると絞らずに全部渡す（実機より速く入る）
+	static const bool off = [] {
+		const char *e = std::getenv("S_MU2000_NO_MIDI_THROTTLE");
+		return e && *e && *e != '0';
+	}();
+
+	for (int port = 0; port < 2; port++) {
+		if (off) {
+			while (m_in_head[port] != m_in_tail[port]) {
+				const uint8_t b = m_in_fifo[port][m_in_tail[port]];
+				m_in_tail[port] = (m_in_tail[port] + 1) & IN_FIFO_MASK;
+				m_mu->midi_in(b, port);
+				m_drv.watch(b, port);
+			}
+			continue;
+		}
+		if (m_in_head[port] == m_in_tail[port])
+			continue;
+		if (m_mu->midi_queued(port) >= 1)
+			continue;                     // 線がまだ塞がっている
+		const uint8_t b = m_in_fifo[port][m_in_tail[port]];
+		m_in_tail[port] = (m_in_tail[port] + 1) & IN_FIFO_MASK;
+		m_mu->midi_in(b, port);
+		m_drv.watch(b, port);
+	}
+}
+
 void engine::one_sample(float &l, float &r)
 {
+	drain_midi();
 	s32 li = 0, ri = 0;
 	// A/D INPUT。溜めが空なら無音（入力の変換器の先読みの分だけ、頭が少し欠ける）
 	if (m_in_r != m_in_w) {
@@ -397,26 +473,58 @@ void engine::one_sample(float &l, float &r)
 void engine::midi(const uint8_t *bytes, size_t n, int port)
 {
 	port = port == 1 ? 1 : 0;
+	// 受け取ったものをそのまま控える（S_MU2000_MIDI_LOG=1 のときだけ）。
+	// ホストが何を寄越しているかを、音源に入る前の姿で見るためのもの。
+	// 置き場は記録と同じ（砂場の中なら容器の下）
+	// **環境変数は砂場の中へは届かない。** AUv3 の拡張は別プロセスで、
+	// 端末で付けた変数は継がれない。だから「印のファイルがあれば控える」形にする:
+	//
+	//   mkdir -p ~/Library/Containers/net.smu2000.S-MU2000.AU/Data/Library/\
+	//            Application\ Support/S-MU2000/midilog
+	//   touch .../midilog/on
+	//
+	// 控えは同じところの midi-in.log に出る。端末から動かすときは
+	// S_MU2000_MIDI_LOG=1 でもよい
+	static std::FILE *midilog = [] () -> std::FILE * {
+		const std::string dir = state_dir("midilog");
+		if (dir.empty())
+			return nullptr;
+		const char *e = std::getenv("S_MU2000_MIDI_LOG");
+		const bool by_env = e && *e && *e != '0';
+		if (!by_env) {
+			std::FILE *mark = std::fopen((dir + "/on").c_str(), "rb");
+			if (!mark)
+				return nullptr;
+			std::fclose(mark);
+		}
+		std::FILE *f = std::fopen((dir + "/midi-in.log").c_str(), "wb");
+		if (f)
+			logf("MIDI の控え: %s/midi-in.log", dir.c_str());
+		return f;
+	}();
+	if (midilog) {
+		std::fprintf(midilog, "%c", port ? 'B' : 'A');
+		for (size_t i = 0; i < n; i++)
+			std::fprintf(midilog, " %02X", bytes[i]);
+		std::fputc('\n', midilog);
+		std::fflush(midilog);
+	}
+
 	const status s = state();
 	if (s == status::failed)
 		return;
-	if (s == status::ready) {
-		std::unique_lock<std::mutex> lock(m_machine, std::try_to_lock);
-		if (lock.owns_lock()) {
-			// 溜まっていた分を先に流して、順番を保つ
-			for (uint8_t b : m_pending[port]) {
-				m_mu->midi_in(b, port);
-				m_drv.watch(b, port);
-			}
-			m_pending[port].clear();
-			for (size_t i = 0; i < n; i++) {
-				m_mu->midi_in(bytes[i], port);
-				m_drv.watch(bytes[i], port);
-			}
-			return;
-		}
+	// **機械には直に入れない。** 自前の列へ置き、実機の線の速さに均しながら
+	// drain_midi() が 1 バイトずつ渡す（列は音声スレッドしか触らない）。
+	// ここで機械に触らないので、排他を取る必要もない。
+	//
+	// 溜まっていたもの（起動待ちや、機械を他が使っていた間の分）が残っている
+	// うちは、そちらの後ろに積む。先に新しい方を入れると順番が入れ替わる
+	if (s == status::ready && m_pending[port].empty()) {
+		for (size_t i = 0; i < n; i++)
+			push_midi(bytes[i], port);
+		return;
 	}
-	// 起動待ちか、機械を他が使っている。あふれるようなら捨てる
+	// 起動待ちか、まだ掃け切っていない。あふれるようなら捨てる
 	std::vector<uint8_t> &pending = m_pending[port];
 	if (pending.size() + n > 65536)
 		return;
@@ -466,6 +574,30 @@ void engine::push_input(const float *in_l, const float *in_r, int n)
 	}
 }
 
+// MIDI OUT。実機の OUT 端子。midi_out_take() は run_sample と同じ糸からしか
+// 呼べないので、呼ぶ側も fill() と同じ糸であること
+// pump_out() が渡してきたものを溜める。溢れたら古いほうから捨てる
+void engine::tx_push(uint8_t v)
+{
+	const int next = (m_tx_w + 1) & TX_MASK;
+	if (next == m_tx_r)
+		m_tx_r = (m_tx_r + 1) & TX_MASK;
+	m_tx[m_tx_w] = v;
+	m_tx_w = next;
+}
+
+size_t engine::midi_out(uint8_t *dst, size_t max)
+{
+	if (!dst || !max)
+		return 0;
+	size_t n = 0;
+	while (n < max && m_tx_r != m_tx_w) {
+		dst[n++] = m_tx[m_tx_r];
+		m_tx_r = (m_tx_r + 1) & TX_MASK;
+	}
+	return n;
+}
+
 void engine::fill(float *left, float *right, int n, const float *in_l, const float *in_r)
 {
 	if (n <= 0)
@@ -487,17 +619,15 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 	m_drv.pump_wheel(*m_mu, m_bridge);
 
 	for (int port = 0; port < 2; port++) {
-		for (uint8_t b : m_pending[port]) {
-			m_mu->midi_in(b, port);
-			m_drv.watch(b, port);
-		}
+		for (uint8_t b : m_pending[port])
+			push_midi(b, port);
 		m_pending[port].clear();
 	}
 
 	if (m_direct) {
 		for (int i = 0; i < n; i++)
 			one_sample(left[i], right[i]);
-		m_drv.pump_out(*m_mu, m_bridge);
+		m_drv.pump_out(*m_mu, m_bridge, [this](u8 v) { tx_push(v); });
 		m_drv.publish(*m_mu, m_bridge, u32(n), u32(NATIVE_RATE), true, nullptr);
 		return;
 	}
@@ -534,7 +664,7 @@ void engine::fill(float *left, float *right, int n, const float *in_l, const flo
 	}
 
 	// firmware が MIDI OUT から送り出したもの（画面の問い合わせの返事）
-	m_drv.pump_out(*m_mu, m_bridge);
+	m_drv.pump_out(*m_mu, m_bridge, [this](u8 v) { tx_push(v); });
 	m_drv.publish(*m_mu, m_bridge, u32(n), u32(NATIVE_RATE), true, nullptr);
 
 	// 桁が落ちる前に原点を戻す。RING の倍数だけずらせば環の並びは変わらない

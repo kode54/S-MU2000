@@ -198,6 +198,132 @@ else
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lwinmm -lole32 -lavrt
 endif
 
+# ---- AUv3 プラグイン（macOS）
+#
+# 実機の端子をそのまま口にしてある（doc/auv3.md）:
+#   出力 MAIN OUT L/R / 入力 A/D INPUT / MIDI 入 ケーブル 0=IN A, 1=IN B / MIDI 出 MIDI OUT
+#
+# **AUv3 はアプリの中の .appex でないとシステムが認めない。** だから音を出さない
+# 器のアプリを一緒に作る。一度起動すると DAW の一覧に出る。
+#
+#   make auv3           build/S-MU2000.app を作る（中に .appex が入る）
+#   make install-auv3   ~/Applications へ複製して一度起動する（登録される）
+#   make auval          auval でプラグインを検査する
+
+ifdef MACOS
+
+AUV3_APP   := $(BUILD)/S-MU2000.app
+AUV3_APPEX := $(AUV3_APP)/Contents/PlugIns/S-MU2000AU.appex
+AUV3_BIN   := $(AUV3_APPEX)/Contents/MacOS/S-MU2000AU
+AUV3_HOST  := $(AUV3_APP)/Contents/MacOS/S-MU2000
+
+# 音源の中身は VST3 と同じ engine を使う（VST3 の型は一つも出てこない）
+AUV3_SRCS := src/auv3/audio_unit.mm src/auv3/factory.mm \
+             src/vst3/engine.cpp src/vst3/hostpaths_mac.cpp
+AUV3_OBJS := $(AUV3_SRCS:%.cpp=$(BUILD)/auv3obj/%.o)
+AUV3_OBJS := $(AUV3_OBJS:%.mm=$(BUILD)/auv3obj/%.o)
+
+# 署名に使う証明書。ad-hoc（-）でも登録される（要るのは砂場の権利のほう）。
+# 配るときは Developer ID で
+#   security find-identity -v -p codesigning   で手元の証明書が見られる
+CODESIGN_ID ?= -
+
+# ROM をバンドルの中へ入れる。
+#
+# **砂場の中からは自分のバンドルの中しか読めない。** AUv3 の拡張は砂場に
+# 入るので（入らないとそもそも登録されない）、$HOME は容器へすり替えられ、
+# ~/Library/Application Support も roms.txt の指す先も届かない。
+# AUv3 として鳴らすには、ここに ROM を入れておくしかない。
+#
+#   make auv3 AUV3_ROMS=roms
+#
+# ROM は配れないので、既定では入れない（入れなければ無音のまま動く）
+AUV3_ROMS ?=
+
+AUV3_FLAGS := -fobjc-arc
+AUV3_FW    := -framework Foundation -framework AudioToolbox -framework AVFoundation \
+              -framework CoreAudio -framework CoreMIDI
+
+$(BUILD)/auv3obj/%.o: %.cpp
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
+$(BUILD)/auv3obj/%.o: %.mm
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) $(AUV3_FLAGS) -ObjC++ -c -o $@ $<
+
+# バンドルの仕上げ（ROM を入れて署名する）は**毎回やる**。
+# 実行ファイルを作り直したときだけにすると、後から AUV3_ROMS を付け足しても
+# 何も起きない（一度これで「無音のまま」になった）
+auv3: $(AUV3_HOST) $(BUILD)/autest$(EXE)
+	# ROM をバンドルへ。**署名より前に**入れること（後から足すと封が破れる）
+ifneq ($(AUV3_ROMS),)
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/roms
+	@mkdir -p $(AUV3_APPEX)/Contents/Resources
+	@cp -R $(AUV3_ROMS) $(AUV3_APPEX)/Contents/Resources/roms
+	@echo "ROM を入れた: $(AUV3_ROMS)"
+	# 起動の写しをここで作って焼き込む。**初めて挿したときに待たせない。**
+	#
+	# 砂場の中のプラグインは NVRAM を持たない（容器が空）ので、鍵が合うように
+	# **こちらも空の HOME で作る**。そうしないと自分の設定が混ざって鍵が変わり、
+	# 焼いた写しが使われない
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/bootcache
+	@tmp=$$(mktemp -d); 	 HOME=$$tmp S_MU2000_ROMS=$(AUV3_ROMS) $(BUILD)/autest$(EXE) --state /dev/null >/dev/null 2>&1; 	 if [ -d "$$tmp/Library/Application Support/S-MU2000/bootcache" ]; then 	   mkdir -p $(AUV3_APPEX)/Contents/Resources/bootcache; 	   cp "$$tmp/Library/Application Support/S-MU2000/bootcache/"*.bin 	      $(AUV3_APPEX)/Contents/Resources/bootcache/ 2>/dev/null; 	   echo "起動の写しを焼いた: $$(ls $(AUV3_APPEX)/Contents/Resources/bootcache | head -1)"; 	 else echo "起動の写しを作れなかった（初回は待たされる）"; fi; 	 rm -rf "$$tmp"
+else
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/roms
+	@rm -rf $(AUV3_APPEX)/Contents/Resources/bootcache
+endif
+	#
+	# **砂場（App Sandbox）の権利が要る。** macOS の app extension は砂場に
+	# 入っていないとシステムが登録しない。権利書を付けずに署名すると、
+	# LaunchServices までは見えているのに pluginkit には出てこない、という
+	# 分かりにくい止まり方をする。**証明書の種類は関係ない**（ad-hoc でも通る）
+	@codesign --force --sign "$(CODESIGN_ID)" --timestamp=none \
+	          --entitlements src/auv3/appex.entitlements $(AUV3_APPEX)
+	@codesign --force --sign "$(CODESIGN_ID)" --timestamp=none \
+	          --entitlements src/auv3/app.entitlements $(AUV3_APP)
+	@echo "出来た: $(AUV3_APP)"
+
+# .appex の本体。入口は NSExtensionMain（main() は持たない）
+$(AUV3_BIN): $(OBJS) $(BUILD)/src/mu2000.o $(AUV3_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(AUV3_FW) \
+	       -e _NSExtensionMain -fapplication-extension
+	@cp -f src/auv3/Info-appex.plist $(AUV3_APPEX)/Contents/Info.plist
+
+# 器のアプリ。音は出さない。.appex を抱えて登録させるだけ
+$(AUV3_HOST): $(AUV3_BIN) $(BUILD)/auv3obj/src/auv3/main_app.o \
+              $(BUILD)/auv3obj/src/vst3/hostpaths_mac.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $(BUILD)/auv3obj/src/auv3/main_app.o \
+	       $(BUILD)/auv3obj/src/vst3/hostpaths_mac.o $(LDFLAGS) -framework Cocoa
+	@cp -f src/auv3/Info-app.plist $(AUV3_APP)/Contents/Info.plist
+	@mkdir -p $(AUV3_APP)/Contents/Resources
+	@cp -f LICENSE $(AUV3_APP)/Contents/Resources/LICENSE.txt
+	@cp -f NOTICE.txt $(AUV3_APP)/Contents/Resources/NOTICE.txt
+
+# 登録させる。~/Applications に置いて一度起動する
+install-auv3: auv3
+	rm -rf "$(HOME)/Applications/S-MU2000.app"
+	@mkdir -p "$(HOME)/Applications"
+	cp -R $(AUV3_APP) "$(HOME)/Applications/"
+	@echo "入れた: $(HOME)/Applications/S-MU2000.app"
+	@echo "一度起動すると DAW の一覧に出る（open してよいか聞かれたら許可する）"
+
+# .appex にせず、その場で登録して口と音を確かめる（doc/auv3.md）
+$(BUILD)/autest$(EXE): $(OBJS) $(BUILD)/src/mu2000.o $(BUILD)/src/smf.o $(AUV3_OBJS) \
+                       $(BUILD)/auv3obj/src/auv3/autest.o
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $(AUV3_FW)
+
+autest: $(BUILD)/autest$(EXE)
+
+auval: install-auv3
+	@sleep 2
+	auval -v aumu MU2k Smu2
+
+endif
+
 # ---- VST3 プラグイン
 #
 # Steinberg の SDK は使わず、インターフェース定義（MIT）だけを取り込んである。
@@ -296,4 +422,5 @@ clean:
 # 別の場所を触りに行っていた）。だから build の下にある .d を全部拾う
 -include $(shell find $(BUILD) -name '*.d' 2>/dev/null)
 
-.PHONY: all clean regen gui vst3 install-vst3 probe test test-update
+.PHONY: all clean regen gui vst3 install-vst3 probe test test-update \
+        auv3 install-auv3 auval autest

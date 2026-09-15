@@ -36,6 +36,9 @@ rom ディレクトリは `python3 tools/make_roms.py <吸い出したもの...>
 音を作るところ（`src/mame/`、`src/mu2000.cpp`）は機種で変わらない。
 違うのは出入口だけなので、上の 3 つも足せる。
 
+プラグインとしては **AUv3** がある（[auv3.md](auv3.md)）。実機の端子を
+そのまま口にしてあり、音源の中身は VST3 と同じ `engine` を使う。
+
 ## 音声と MIDI
 
 | | Windows | macOS |

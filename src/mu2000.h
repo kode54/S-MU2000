@@ -122,6 +122,10 @@ public:
 		return true;
 	}
 
+	// その口の受信線にまだ溜まっているバイト数。線は 31250bps で流れるので、
+	// ここが積み上がっているということは、実機の線でも詰まっているということ
+	size_t midi_queued(int port) const { return m_midi[port].queue.size(); }
+
 	// MIDI OUT。実機の OUT 端子で、SH7043 の SCI ch0 の送信線に繋がっている
 	// （MAME の ymmu2000.cpp と同じ）。firmware が送り出したもの
 	// （XG の問い合わせやダンプ要求への返事など）を 1 バイトずつ取る。
