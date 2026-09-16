@@ -419,9 +419,22 @@ VST3_SDK_SRCS := \
 # this Makefile names the same drawing layer in its own VST3_SRCS, with
 # view_win.cpp in place of view_mac.mm)
 PANEL_VIEW_SRCS := src/vst3/view.cpp src/vst3/view_mac.mm
+
+# engine.cpp calls ui::xgui::set_voice_rom so the voice names and the instrument
+# pictures come from the ROM, the same as gui does. That lives in xg_ui.cpp,
+# which is written against Dear ImGui, so the core of ImGui comes with it.
+#
+# The Windows side gets this by linking the whole PC editor ($(PC_OBJS)) into the
+# plug-ins, because there the panel's context menu can open those windows. Here
+# it cannot yet -- plug_window::pc_frame keeps its do-nothing default on macOS --
+# so only the two files the symbol actually needs are linked, and none of the
+# ImGui backends
+PANEL_XG_SRCS := src/ui/xg_ui.cpp src/ui/fx_help.cpp $(IMGUI_CORE)
+
 PANEL_SRCS := src/compat/gdi_mac.cpp \
               src/ui/panel.cpp src/ui/layout.cpp src/ui/svg.cpp src/ui/editor.cpp \
-              src/ui/effects.cpp src/xg/model.cpp
+              src/ui/effects.cpp src/xg/model.cpp \
+              $(PANEL_XG_SRCS)
 
 VST3_SRCS := src/vst3/plugin.cpp src/vst3/engine.cpp src/vst3/iids.cpp \
              $(PANEL_VIEW_SRCS) $(PANEL_SRCS) $(VST3_SDK_SRCS)
@@ -430,11 +443,11 @@ VST3_OBJS := $(VST3_OBJS:%.mm=$(BUILD)/vst3obj/%.o)
 
 $(BUILD)/vst3obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(VST3_INC) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -c -o $@ $<
 
 $(BUILD)/vst3obj/%.o: %.mm
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) $(VST3_INC) -fobjc-arc -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(VST3_INC) $(IMGUI_FLAGS) -fobjc-arc -c -o $@ $<
 
 vst3: $(VST3_BIN)
 

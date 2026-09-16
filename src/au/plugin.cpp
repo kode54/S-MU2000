@@ -29,6 +29,7 @@
 
 #include "editor.h"
 #include "state.h"
+#include "mu2000.h"
 #include "vst3/engine.h"
 
 #include <AudioToolbox/AudioToolbox.h>
@@ -235,8 +236,46 @@ struct au_instance
 			midi_work.swap(midi_in);
 	}
 
+	// ---- Which channels have actually sounded, per port.
+	//
+	// Stopping the transport used to send all-sound-off and all-notes-off to
+	// every channel. That is 192 bytes per port, and the emulated MIDI line
+	// carries them at 31250bps -- 61 ms during which anything queued behind
+	// waits, so the first note after a restart arrived late and every note
+	// after it was on time (issue #15, fixed for the VST3 in 90e7960).
+	//
+	// Remembering which channels were used costs one OR per note-on and turns
+	// the burst into only what is needed. The AUv2's MIDI has no cable number,
+	// so in practice only port 0 is ever set; the array is per port anyway so
+	// that this reads the same as the VST3 side
+	uint16_t sounded[mu2000::MIDI_PORTS] = {};
+
+	void note_sounded(const UInt8 *bytes, size_t n, int port)
+	{
+		// A note-on with a non-zero velocity. Note-off and a zero-velocity
+		// note-on cannot start a voice, so they do not need silencing later
+		if (n >= 3 && (bytes[0] & 0xf0) == 0x90 && bytes[2])
+			sounded[port] |= uint16_t(1u << (bytes[0] & 0x0f));
+	}
+
+	// Silence what has sounded, and forget it. Called when the host resets or
+	// switches preset
+	void hush()
+	{
+		uint16_t mask[mu2000::MIDI_PORTS];
+		bool any = false;
+		for (int p = 0; p < mu2000::MIDI_PORTS; p++) {
+			mask[p] = sounded[p];
+			sounded[p] = 0;
+			any = any || mask[p];
+		}
+		if (any)
+			eng.all_notes_off(mask, mu2000::MIDI_PORTS);
+	}
+
 	void queue(UInt32 offset, const UInt8 *bytes, size_t n)
 	{
+		note_sounded(bytes, n, 0);
 		std::lock_guard<std::mutex> lock(midi_mutex);
 		if (midi_in.size() >= kMidiReserveMsgs)
 			midi_in.erase(midi_in.begin());     // overflow: drop the oldest
@@ -1059,7 +1098,7 @@ OSStatus prop_set(au_instance *au, AudioUnitPropertyID id, AudioUnitScope scope,
 		if (size < sizeof(AUPreset))
 			return kAudioUnitErr_InvalidPropertyValue;
 		param_set(au, kParamGain, 1.0f);
-		au->eng.all_notes_off();
+		au->hush();
 		return noErr;
 
 	case kAudioUnitProperty_ParameterValueFromString: {
@@ -1324,7 +1363,7 @@ OSStatus au_reset(void *self, AudioUnitScope scope, AudioUnitElement element)
 		return kAudio_ParamError;
 	(void)scope;
 	(void)element;
-	au->eng.all_notes_off();
+	au->hush();
 	return noErr;
 }
 
